@@ -4,7 +4,7 @@
 
 ## 必須タスク (for dev)
 
-- [ ] **`.env.local` ファイルの作成と設定**
+- [x] **`.env.local` ファイルの作成と設定**
   - `misskey-antennatl` のルートディレクトリに `.env.local` ファイルを作成する必要があります。
   - `.env.local.sample` をコピーし、以下の3つの環境変数を自分のMisskey環境に合わせて設定してください。
     - `MISSKEY_HOST`: あなたのMisskeyインスタンスのURL (例: `https://misskey.io`)
