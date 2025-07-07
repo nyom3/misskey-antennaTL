@@ -11,6 +11,18 @@
     - `MISSKEY_TOKEN`: `read:antennas` と `read:notes` の権限を持つAPIトークン
     - `ANTENNA_ID`: 監視対象のアンテナID
 
+- [x] **`lib/misskey.ts` に `misskeyFetch` ヘルパーと `getTimelineAround` 関数を実装**
+  - Misskey APIへのリクエストを共通化し、トークンを自動注入する `misskeyFetch` を作成。
+  - 指定されたノートIDを中心に、その前後のタイムラインを取得する `getTimelineAround` を実装。
+
+- [x] **新 Edge Route `/api/contextTL` の実装**
+  - クエリパラメータ `noteId` (必須) と `scope` (global/local) を受け取り、`getTimelineAround` を呼び出して結果を返すAPIルートを実装。
+  - エラーハンドリング（400, 500, 429）を実装。
+
+- [x] **`src/app/page.tsx` を `/api/contextTL` を利用するように修正**
+  - `useSWR` のエンドポイントを `/api/contextTL` に変更し、`noteId` と `scope` を渡すように修正。
+  - データ型を `MisskeyNote[]` に変更し、取得したノートを `NoteCard` で表示するように変更。
+
 - [ ] **Misskey APIレスポンスの完全なパース処理**
   - 現在、`lib/misskey.ts` の `fetchConversation` 関数は、会話スレッドを正しく `ancestors` と `descendants` に分類していません。（簡易的なプレースホルダー実装になっています）
   - Misskeyの `/api/notes/conversation` から返されるフラットなノート配列を、リプライ関係に基づいて正しくソートし、スレッド構造に再構築するロジックを実装する必要があります。

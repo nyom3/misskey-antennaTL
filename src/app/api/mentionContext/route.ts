@@ -63,7 +63,7 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     // エラーハンドリング
-    console.error(error);
+    console.error('Error in /api/mentionContext:', error);
     const errorMessage = error instanceof Error ? error.message : '不明なエラーが発生しました';
     return NextResponse.json({ error: 'メンションコンテキストの取得に失敗しました', details: errorMessage }, { status: 500 });
   }
