@@ -1,9 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import { Toaster, toast } from 'react-hot-toast';
-import { Thread as ThreadType } from '@/lib/misskey';
-import Thread from '@/components/Thread';
+import { MisskeyNote, Thread } from '@/lib/misskey';
+import NoteCard from '@/components/NoteCard';
 
 /**
  * SWRがデータフェッチに利用するfetcher関数。
@@ -28,18 +29,40 @@ const fetcher = (url: string) => fetch(url).then((res) => {
  * 定期的なデータ再取得、ローディング状態、エラー状態のハンドリングを行います。
  */
 export default function HomePage() {
-  // useSWRフックでAPIからデータを取得
-  const { data, error, isLoading } = useSWR<ThreadType[]>(
-    '/api/mentionContext', // APIエンドポイント
-    fetcher, // データ取得用の関数
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+
+  // アンテナノートを取得
+  const { data: antennaData, error: antennaError, isLoading: isLoadingAntenna } = useSWR<Thread[]>(
+    '/api/mentionContext',
+    fetcher,
     {
-      refreshInterval: 30000, // 30秒ごとにデータを自動再取得
+      refreshInterval: 30000,
       onError: (err) => {
-        // データ取得エラー時にトースト通知を表示
+        toast.error(`アンテナノートの読込に失敗: ${err.message}`);
+      }
+    }
+  );
+
+  const timelineScope = 'global'; // 'global' または 'local'
+
+  // コンテキストタイムラインを取得
+  const { data: timelineData, error: timelineError, isLoading: isLoadingTimeline } = useSWR<MisskeyNote[]>(
+    selectedNoteId ? `/api/contextTL?noteId=${selectedNoteId}&scope=${timelineScope}` : null,
+    fetcher,
+    {
+      refreshInterval: 30000,
+      onError: (err) => {
         toast.error(`タイムラインの読込に失敗: ${err.message}`);
       }
     }
   );
+
+  const isLoading = isLoadingAntenna || (selectedNoteId && isLoadingTimeline);
+  const error = antennaError || timelineError;
+
+  const handleSelectNote = (noteId: string) => {
+    setSelectedNoteId(noteId);
+  };
 
   return (
     <div className="bg-white dark:bg-black min-h-screen">
@@ -47,7 +70,7 @@ export default function HomePage() {
       <Toaster />
       <main className="container mx-auto max-w-2xl p-4">
         <header className="mb-6">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Misskey Mentions</h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Misskey Mentions (Context TL)</h1>
         </header>
         
         {/* ローディング中の表示 */}
@@ -65,13 +88,36 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* データ取得成功時の表示 */}
-        {data && (
-          <div className="space-y-6">
-            {data.map((thread) => (
-              <Thread key={thread.root.id} thread={thread} />
+        {!isLoading && !error && !selectedNoteId && antennaData && (
+          <div className="space-y-4">
+            <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-200 mb-4">アンテナノートを選択</h2>
+            {antennaData.map((thread) => (
+              <NoteCard 
+                key={thread.root.id} 
+                note={thread.root} 
+                onClick={() => handleSelectNote(thread.root.id)}
+                className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-200"
+              />
             ))}
           </div>
+        )}
+
+        {!isLoading && !error && selectedNoteId && timelineData && (
+          <div className="space-y-6">
+            <button 
+              onClick={() => setSelectedNoteId(null)}
+              className="mb-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors duration-200"
+            >
+              アンテナノート選択に戻る
+            </button>
+            {timelineData.map((note) => (
+              <NoteCard key={note.id} note={note} isAntennaRoot={note.id === selectedNoteId} />
+            ))}
+          </div>
+        )}
+
+        {!isLoading && !error && !antennaData && (
+          <p className="text-center text-gray-500 dark:text-gray-400">アンテナノートがありません。</p>
         )}
       </main>
     </div>
