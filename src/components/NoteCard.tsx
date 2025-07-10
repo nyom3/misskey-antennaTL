@@ -4,18 +4,19 @@ import Image from 'next/image';
 import { MisskeyNote } from '@/lib/misskey';
 
 // :emoji: の形式を実際の絵文字画像に置き換えるヘルパー
-function renderTextWithEmoji(text?: string | null, emojis?: { name: string; url: string }[]) {
+// Misskey APIでは絵文字一覧が Record<string, string> で返る
+function renderTextWithEmoji(text?: string | null, emojis?: Record<string, string>) {
   if (!text) return null;
   const parts = text.split(/(:[a-zA-Z0-9_]+:)/g);
   return parts.map((part, idx) => {
     const match = part.match(/^:([a-zA-Z0-9_]+):$/);
     if (match) {
-      const emoji = emojis?.find(e => e.name === match[1]);
-      if (emoji) {
+      const url = emojis ? emojis[match[1]] : undefined;
+      if (url) {
         return (
           <Image
             key={idx}
-            src={emoji.url}
+            src={url}
             alt={match[0]}
             width={20}
             height={20}
