@@ -55,6 +55,23 @@ export default function NoteCard({ note, isAntennaRoot, onClick, className }: No
         <div className="mt-1 text-sm text-gray-800 dark:text-gray-200"> {/* フォントサイズを小さく */}
           {note.text}
         </div>
+        {note.reactions && (
+          <div className="flex space-x-2 mt-1 text-xs items-center">
+            {Object.entries(note.reactions).map(([name, count]) => {
+              const emoji = note.reactionEmojis?.[name]?.url;
+              return (
+                <span key={name} className="flex items-center space-x-1">
+                  {emoji ? (
+                    <Image src={emoji} alt={name} width={16} height={16} />
+                  ) : (
+                    <span>{name}</span>
+                  )}
+                  <span>{count}</span>
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

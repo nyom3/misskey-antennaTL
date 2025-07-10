@@ -40,15 +40,9 @@ export async function GET(request: Request) {
       antennaNotes,
       async (note) => {
         const conversation = await fetchConversation(host, token, note.id);
-        // lib/misskey.tsから返された会話データをスレッド構造に整形
-        // 注: 現在の実装は簡易的なプレースホルダーです
-        return {
-          root: note,
-          ancestors: [],
-          descendants: conversation.descendants,
-        };
+        return conversation;
       },
-      { concurrency: 5 } // 同時実行数を5に制限
+      { concurrency: 5 }
     );
 
     // 3. 取得したスレッドデータをZodスキーマで検証

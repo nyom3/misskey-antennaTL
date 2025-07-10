@@ -1,10 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import useSWR from 'swr';
 import { Toaster, toast } from 'react-hot-toast';
-import { MisskeyNote, Thread } from '@/lib/misskey';
-import NoteCard from '@/components/NoteCard';
+import { Thread } from '@/lib/misskey';
+import ThreadComponent from '@/components/Thread';
 
 /**
  * SWRがデータフェッチに利用するfetcher関数。
@@ -15,9 +14,8 @@ import NoteCard from '@/components/NoteCard';
  */
 const fetcher = (url: string) => fetch(url).then((res) => {
   if (!res.ok) {
-    const error = new Error('APIリクエスト中にエラーが発生しました。');
-    // エラーオブジェクトに追加情報を付与
-    res.json().then(body => { (error as any).info = body; });
+    const error = new Error('APIリクエスト中にエラーが発生しました。') as Error & { info?: unknown };
+    res.json().then((body: unknown) => { error.info = body; });
     throw error;
   }
   return res.json();
@@ -29,10 +27,8 @@ const fetcher = (url: string) => fetch(url).then((res) => {
  * 定期的なデータ再取得、ローディング状態、エラー状態のハンドリングを行います。
  */
 export default function HomePage() {
-  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
-
-  // アンテナノートを取得
-  const { data: antennaData, error: antennaError, isLoading: isLoadingAntenna } = useSWR<Thread[]>(
+  // スレッド一覧を取得
+  const { data: threads, error, isLoading } = useSWR<Thread[]>(
     '/api/mentionContext',
     fetcher,
     {
@@ -43,26 +39,6 @@ export default function HomePage() {
     }
   );
 
-  const timelineScope = 'global'; // 'global' または 'local'
-
-  // コンテキストタイムラインを取得
-  const { data: timelineData, error: timelineError, isLoading: isLoadingTimeline } = useSWR<MisskeyNote[]>(
-    selectedNoteId ? `/api/contextTL?noteId=${selectedNoteId}&scope=${timelineScope}` : null,
-    fetcher,
-    {
-      refreshInterval: 30000,
-      onError: (err) => {
-        toast.error(`タイムラインの読込に失敗: ${err.message}`);
-      }
-    }
-  );
-
-  const isLoading = isLoadingAntenna || (selectedNoteId && isLoadingTimeline);
-  const error = antennaError || timelineError;
-
-  const handleSelectNote = (noteId: string) => {
-    setSelectedNoteId(noteId);
-  };
 
   return (
     <div className="bg-white dark:bg-black min-h-screen">
@@ -88,35 +64,15 @@ export default function HomePage() {
           </div>
         )}
 
-        {!isLoading && !error && !selectedNoteId && antennaData && (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-200 mb-4">アンテナノートを選択</h2>
-            {antennaData.map((thread) => (
-              <NoteCard 
-                key={thread.root.id} 
-                note={thread.root} 
-                onClick={() => handleSelectNote(thread.root.id)}
-                className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-200"
-              />
-            ))}
-          </div>
-        )}
-
-        {!isLoading && !error && selectedNoteId && timelineData && (
+        {!isLoading && !error && threads && (
           <div className="space-y-6">
-            <button 
-              onClick={() => setSelectedNoteId(null)}
-              className="mb-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors duration-200"
-            >
-              アンテナノート選択に戻る
-            </button>
-            {timelineData.map((note) => (
-              <NoteCard key={note.id} note={note} isAntennaRoot={note.id === selectedNoteId} />
+            {threads.map((thread) => (
+              <ThreadComponent key={thread.root.id} thread={thread} />
             ))}
           </div>
         )}
 
-        {!isLoading && !error && !antennaData && (
+        {!isLoading && !error && !threads && (
           <p className="text-center text-gray-500 dark:text-gray-400">アンテナノートがありません。</p>
         )}
       </main>

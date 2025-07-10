@@ -36,11 +36,12 @@ export async function GET(request: Request) {
         'Cache-Control': 's-maxage=60, stale-while-revalidate',
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error(error);
-    const statusCode = error.statusCode || 500;
-    const errorMessage = error.message || '不明なエラーが発生しました';
-    const retryAfter = error.retryAfter;
+    const err = error as { statusCode?: number; message?: string; retryAfter?: string };
+    const statusCode = err.statusCode || 500;
+    const errorMessage = err.message || '不明なエラーが発生しました';
+    const retryAfter = err.retryAfter;
 
     const headers: HeadersInit = {};
     if (retryAfter) {

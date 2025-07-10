@@ -6,6 +6,7 @@ import pMap from 'p-map';
 export const MisskeyNoteSchema = z.object({
   id: z.string(),
   createdAt: z.string(),
+  replyId: z.string().nullable(),
   text: z.string().nullable(),
   cw: z.string().nullable(), // Contents Warningのテキスト
   user: z.object({
@@ -19,6 +20,11 @@ export const MisskeyNoteSchema = z.object({
   files: z.array(z.object({
     thumbnailUrl: z.string().url(),
   })).optional(), // 添付ファイルのサムネイルURL
+  reactions: z.record(z.number()).optional(),
+  reactionEmojis: z.record(z.object({
+    name: z.string(),
+    url: z.string().url(),
+  })).optional(),
   // その他の必要なフィールドがあればここに追加
 });
 
@@ -56,10 +62,13 @@ async function misskeyFetch(host: string, token: string, endpoint: string, body:
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    const errorMessage = errorBody.error?.message || response.statusText;
-    const error = new Error(`Misskey APIエラー (${endpoint}): ${errorMessage}`);
-    (error as any).statusCode = response.status;
-    (error as any).retryAfter = response.headers.get('Retry-After');
+    const errorMessage = (errorBody as { error?: { message?: string } }).error?.message || response.statusText;
+    const error = new Error(`Misskey APIエラー (${endpoint}): ${errorMessage}`) as Error & {
+      statusCode?: number;
+      retryAfter?: string | null;
+    };
+    error.statusCode = response.status;
+    error.retryAfter = response.headers.get('Retry-After');
     throw error;
   }
   return response.json();
@@ -86,14 +95,43 @@ export async function fetchAntennaNotes(host: string, token: string, antennaId: 
  * @returns 構造化されたスレッドオブジェクト
  */
 export async function fetchConversation(host: string, token: string, noteId: string) {
-  const conversation = await misskeyFetch(host, token, 'notes/conversation', { noteId });
+  const raw = await misskeyFetch(host, token, 'notes/conversation', { noteId });
+  const notes = z.array(MisskeyNoteSchema).parse(raw);
 
-  const rootNote = conversation.find((note: any) => note.id === noteId);
-  return {
-    root: rootNote,
-    ancestors: [], // 本来はここにも適切なノートが入る
-    descendants: conversation.filter((note: any) => note.id !== noteId), // root以外を子孫として仮置き
+  const map = new Map<string, MisskeyNote>();
+  for (const n of notes) {
+    map.set(n.id, n);
+  }
+
+  const root = map.get(noteId);
+  if (!root) {
+    throw new Error('Root note not found');
+  }
+
+  const ancestors: MisskeyNote[] = [];
+  let current: MisskeyNote | undefined = root;
+  const visited = new Set<string>();
+  while (current && current.replyId && !visited.has(current.replyId)) {
+    const parent = map.get(current.replyId);
+    if (!parent) break;
+    ancestors.unshift(parent);
+    visited.add(parent.id);
+    current = parent;
+  }
+
+  const descendants: MisskeyNote[] = [];
+  const collect = (parentId: string) => {
+    for (const note of notes) {
+      if (note.replyId === parentId) {
+        descendants.push(note);
+        collect(note.id);
+      }
+    }
   };
+  collect(root.id);
+  descendants.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  return { root, ancestors, descendants };
 }
 
 /**
