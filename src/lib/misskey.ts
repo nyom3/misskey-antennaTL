@@ -19,10 +19,8 @@ export const MisskeyNoteSchema = z.object({
   files: z.array(z.object({
     thumbnailUrl: z.string().url(),
   })).optional(), // 添付ファイルのサムネイルURL
-  emojis: z.array(z.object({
-    name: z.string(),
-    url: z.string().url(),
-  })).optional(), // カスタム絵文字
+  // Misskey APIでは { name: url } の連想配列として返るため Record で受け取る
+  emojis: z.record(z.string().url()).optional(),
   // その他の必要なフィールドがあればここに追加
 });
 
