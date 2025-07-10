@@ -3,6 +3,31 @@
 import Image from 'next/image';
 import { MisskeyNote } from '@/lib/misskey';
 
+// :emoji: の形式を実際の絵文字画像に置き換えるヘルパー
+function renderTextWithEmoji(text?: string | null, emojis?: { name: string; url: string }[]) {
+  if (!text) return null;
+  const parts = text.split(/(:[a-zA-Z0-9_]+:)/g);
+  return parts.map((part, idx) => {
+    const match = part.match(/^:([a-zA-Z0-9_]+):$/);
+    if (match) {
+      const emoji = emojis?.find(e => e.name === match[1]);
+      if (emoji) {
+        return (
+          <Image
+            key={idx}
+            src={emoji.url}
+            alt={match[0]}
+            width={20}
+            height={20}
+            className="inline-block align-text-bottom"
+          />
+        );
+      }
+    }
+    return <span key={idx}>{part}</span>;
+  });
+}
+
 // NoteCardコンポーネントのProps型定義
 interface NoteCardProps {
   note: MisskeyNote;
@@ -53,7 +78,7 @@ export default function NoteCard({ note, isAntennaRoot, onClick, className }: No
         </div>
         {/* ノート本文 */}
         <div className="mt-1 text-sm text-gray-800 dark:text-gray-200"> {/* フォントサイズを小さく */}
-          {note.text}
+          {renderTextWithEmoji(note.text, note.emojis)}
         </div>
       </div>
     </div>

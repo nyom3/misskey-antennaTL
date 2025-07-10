@@ -19,6 +19,10 @@ export const MisskeyNoteSchema = z.object({
   files: z.array(z.object({
     thumbnailUrl: z.string().url(),
   })).optional(), // 添付ファイルのサムネイルURL
+  emojis: z.array(z.object({
+    name: z.string(),
+    url: z.string().url(),
+  })).optional(), // カスタム絵文字
   // その他の必要なフィールドがあればここに追加
 });
 
