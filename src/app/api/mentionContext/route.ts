@@ -56,7 +56,10 @@ export async function GET(request: Request) {
 
     // 4. 検証済みのデータをJSON形式でレスポンスとして返す
     // CDNキャッシュを60秒間有効にするヘッダーを付与
-    return NextResponse.json(validatedThreads, {
+    return NextResponse.json({
+      threads: validatedThreads,
+      instanceHost: host,
+    }, {
       headers: {
         'Cache-Control': 's-maxage=60, stale-while-revalidate',
       },

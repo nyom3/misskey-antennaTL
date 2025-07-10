@@ -4,13 +4,7 @@ const nextConfig = {
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: '*.nekonet.cyou',
-        port: '',
-        pathname: '/**',
-      },
-      {
-        protocol: 'https',
-        hostname: '*.misskey.tarohouse.net',
+        hostname: '**',
         port: '',
         pathname: '/**',
       },

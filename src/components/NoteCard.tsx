@@ -2,32 +2,7 @@
 
 import Image from 'next/image';
 import { MisskeyNote } from '@/lib/misskey';
-
-// :emoji: の形式を実際の絵文字画像に置き換えるヘルパー
-// Misskey APIでは絵文字一覧が Record<string, string> で返る
-function renderTextWithEmoji(text?: string | null, emojis?: Record<string, string>) {
-  if (!text) return null;
-  const parts = text.split(/(:[a-zA-Z0-9_]+:)/g);
-  return parts.map((part, idx) => {
-    const match = part.match(/^:([a-zA-Z0-9_]+):$/);
-    if (match) {
-      const url = emojis ? emojis[match[1]] : undefined;
-      if (url) {
-        return (
-          <Image
-            key={idx}
-            src={url}
-            alt={match[0]}
-            width={20}
-            height={20}
-            className="inline-block align-text-bottom"
-          />
-        );
-      }
-    }
-    return <span key={idx}>{part}</span>;
-  });
-}
+import { parseNoteText } from '@/lib/emoji'; // 新しく追加
 
 // NoteCardコンポーネントのProps型定義
 interface NoteCardProps {
@@ -35,6 +10,7 @@ interface NoteCardProps {
   isAntennaRoot?: boolean; // 新しく追加するプロパティ
   onClick?: () => void; // クリックイベントハンドラを追加
   className?: string; // カスタムクラス名を追加
+  instanceHost: string; // 新しく追加: Misskeyインスタンスのホスト名
 }
 
 /**
@@ -52,7 +28,7 @@ const formatTime = (dateString: string) => {
  * ユーザーのアバター、名前、本文、投稿日時などを表示します。
  * @param {NoteCardProps} props - noteオブジェクトを含むprops
  */
-export default function NoteCard({ note, isAntennaRoot, onClick, className }: NoteCardProps) {
+export default function NoteCard({ note, isAntennaRoot, onClick, className, instanceHost }: NoteCardProps) {
   const cardClasses = `flex space-x-3 p-3 border-b border-gray-200 dark:border-gray-800 ${isAntennaRoot ? 'bg-yellow-100 dark:bg-yellow-900' : ''} ${className || ''}`;
 
   return (
@@ -78,9 +54,7 @@ export default function NoteCard({ note, isAntennaRoot, onClick, className }: No
           <span className="text-gray-500 dark:text-gray-400">· {formatTime(note.createdAt)}</span>
         </div>
         {/* ノート本文 */}
-        <div className="mt-1 text-sm text-gray-800 dark:text-gray-200"> {/* フォントサイズを小さく */}
-          {renderTextWithEmoji(note.text, note.emojis)}
-        </div>
+        <div className="mt-1 text-sm text-gray-800 dark:text-gray-200" dangerouslySetInnerHTML={{ __html: parseNoteText(note.text || '', instanceHost) }} />
       </div>
     </div>
   );

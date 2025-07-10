@@ -32,7 +32,7 @@ export default function HomePage() {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
 
   // アンテナノートを取得
-  const { data: antennaData, error: antennaError, isLoading: isLoadingAntenna } = useSWR<Thread[]>(
+  const { data: antennaData, error: antennaError, isLoading: isLoadingAntenna } = useSWR<{ threads: Thread[], instanceHost: string }>(
     '/api/mentionContext',
     fetcher,
     {
@@ -64,6 +64,8 @@ export default function HomePage() {
     setSelectedNoteId(noteId);
   };
 
+  const instanceHost = antennaData?.instanceHost; // instanceHostを取得
+
   return (
     <div className="bg-white dark:bg-black min-h-screen">
       {/* react-hot-toast用のコンテナ */}
@@ -91,12 +93,13 @@ export default function HomePage() {
         {!isLoading && !error && !selectedNoteId && antennaData && (
           <div className="space-y-4">
             <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-200 mb-4">アンテナノートを選択</h2>
-            {antennaData.map((thread) => (
+            {antennaData.threads.map((thread) => (
               <NoteCard 
                 key={thread.root.id} 
                 note={thread.root} 
                 onClick={() => handleSelectNote(thread.root.id)}
                 className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-200"
+                instanceHost={instanceHost || ''} // instanceHostを渡す
               />
             ))}
           </div>
@@ -111,7 +114,7 @@ export default function HomePage() {
               アンテナノート選択に戻る
             </button>
             {timelineData.map((note) => (
-              <NoteCard key={note.id} note={note} isAntennaRoot={note.id === selectedNoteId} />
+              <NoteCard key={note.id} note={note} isAntennaRoot={note.id === selectedNoteId} instanceHost={instanceHost || ''} /> // instanceHostを渡す
             ))}
           </div>
         )}
