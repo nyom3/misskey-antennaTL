@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
 import { Toaster, toast } from 'react-hot-toast';
 import { MisskeyNote, Thread } from '@/lib/misskey';
 import NoteCard from '@/components/NoteCard';
+import { fetchAndCacheEmojis } from '@/lib/emoji';
 
 /**
  * SWRがデータフェッチに利用するfetcher関数。
@@ -30,6 +31,9 @@ const fetcher = (url: string) => fetch(url).then((res) => {
  */
 export default function HomePage() {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  // 絵文字キャッシュの準備ができたかどうかを管理するstate。
+  // ハイドレーションエラーを防ぐため、絵文字キャッシュが完了するまでノートの描画を遅延させる。
+  const [isEmojiCacheReady, setIsEmojiCacheReady] = useState(false);
 
   // アンテナノートを取得
   const { data: antennaData, error: antennaError, isLoading: isLoadingAntenna } = useSWR<{ threads: Thread[], instanceHost: string }>(
@@ -57,14 +61,33 @@ export default function HomePage() {
     }
   );
 
-  const isLoading = isLoadingAntenna || (selectedNoteId && isLoadingTimeline);
+  const instanceHost = antennaData?.instanceHost;
+
+  // 絵文字キャッシュのフェッチと状態管理を行うuseEffectフック。
+  // instanceHostが利用可能になったら絵文字データを非同期で取得し、キャッシュが完了したらisEmojiCacheReadyをtrueにする。
+  // コンポーネントのアンマウント時にクリーンアップを行うためのisMountedフラグも使用。
+  useEffect(() => {
+    if (instanceHost) {
+      let isMounted = true;
+      setIsEmojiCacheReady(false); // 新しいインスタンスホストが設定されたら、キャッシュ準備状態をリセット
+      fetchAndCacheEmojis(instanceHost).then(() => {
+        if (isMounted) {
+          setIsEmojiCacheReady(true);
+        }
+      });
+      return () => { isMounted = false; }; // クリーンアップ関数
+    }
+  }, [instanceHost]); // instanceHostが変更されたときに再実行
+
+  // 全体のローディング状態を判断する。
+  // アンテナノートのロード中、または選択されたノートのタイムラインロード中、
+  // あるいはインスタンスホストがあり絵文字キャッシュがまだ準備できていない場合にtrueとなる。
+  const isLoading = isLoadingAntenna || (selectedNoteId && isLoadingTimeline) || (!!instanceHost && !isEmojiCacheReady);
   const error = antennaError || timelineError;
 
   const handleSelectNote = (noteId: string) => {
     setSelectedNoteId(noteId);
   };
-
-  const instanceHost = antennaData?.instanceHost; // instanceHostを取得
 
   return (
     <div className="bg-white dark:bg-black min-h-screen">
@@ -99,7 +122,8 @@ export default function HomePage() {
                 note={thread.root} 
                 onClick={() => handleSelectNote(thread.root.id)}
                 className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-200"
-                instanceHost={instanceHost || ''} // instanceHostを渡す
+                instanceHost={instanceHost || ''} // Misskeyインスタンスのホスト名をNoteCardに渡す
+                isEmojiCacheReady={isEmojiCacheReady} // 絵文字キャッシュの準備状態をNoteCardに渡す
               />
             ))}
           </div>
@@ -114,7 +138,13 @@ export default function HomePage() {
               アンテナノート選択に戻る
             </button>
             {timelineData.map((note) => (
-              <NoteCard key={note.id} note={note} isAntennaRoot={note.id === selectedNoteId} instanceHost={instanceHost || ''} /> // instanceHostを渡す
+              <NoteCard 
+                key={note.id} 
+                note={note} 
+                isAntennaRoot={note.id === selectedNoteId} 
+                instanceHost={instanceHost || ''} // Misskeyインスタンスのホスト名をNoteCardに渡す
+                isEmojiCacheReady={isEmojiCacheReady} // 絵文字キャッシュの準備状態をNoteCardに渡す
+              />
             ))}
           </div>
         )}

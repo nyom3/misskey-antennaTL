@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import pMap from 'p-map';
 
-// Misskeyのノート情報を軽量化したZodスキーマ定義
-// APIレスポンスから必要なフィールドのみを抽出し、型安全性を保証します。
+// Misskeyのノート情報を軽量化したZodスキーマ定義。
+// Misskey APIから返されるノートオブジェクトの構造を定義し、
+// ランタイムでのバリデーションとTypeScriptの型生成に利用します。
+// これにより、APIレスポンスの型安全性を保証します。
 export const MisskeyNoteSchema = z.object({
   id: z.string(),
   createdAt: z.string(),
@@ -24,51 +26,59 @@ export const MisskeyNoteSchema = z.object({
   // その他の必要なフィールドがあればここに追加
 });
 
-// ZodスキーマからTypeScriptの型を生成
+// ZodスキーマからTypeScriptの型を生成します。
+// これにより、コード全体でMisskeyNoteオブジェクトを型安全に扱えます。
 export type MisskeyNote = z.infer<typeof MisskeyNoteSchema>;
 
-// スレッド全体の構造を定義するZodスキーマ
+// スレッド全体の構造を定義するZodスキーマ。
+// 会話の流れを表現するために、ルートノート、祖先ノート、子孫ノートを含みます。
 export const ThreadSchema = z.object({
   root: MisskeyNoteSchema,      // スレッドの起点となるノート
   ancestors: z.array(MisskeyNoteSchema), // rootより前のノート（古い順）
   descendants: z.array(MisskeyNoteSchema), // rootより後のノート（新しい順）
 });
 
+// ThreadスキーマからTypeScriptの型を生成します。
 export type Thread = z.infer<typeof ThreadSchema>;
 
 /**
  * Misskey APIへのリクエストを共通化するヘルパー関数。
- * トークンを自動で注入し、エラーハンドリングを行います。
+ * すべてのMisskey API呼び出しはこの関数を経由し、
+ * 認証トークンの自動注入、Content-Typeヘッダーの設定、エラーハンドリングを行います。
  * @param host Misskeyインスタンスのホスト名
  * @param token 認証用APIトークン
  * @param endpoint APIエンドポイント (例: 'notes/show')
- * @param body リクエストボディ
+ * @param body リクエストボディ (デフォルトは空オブジェクト)
  * @returns APIレスポンスのJSONデータ
- * @throws APIリクエストが失敗した場合
+ * @throws APIリクエストが失敗した場合、エラーをスローします。
  */
-async function misskeyFetch(host: string, token: string, endpoint: string, body: object = {}) {
+export async function misskeyFetch(host: string, token: string, endpoint: string, body: object = {}) {
   const response = await fetch(`${host}/api/${endpoint}`, {
-    method: 'POST',
+    method: 'POST', // Misskey APIはほとんどのエンドポイントでPOSTメソッドを使用します
     headers: {
       'Content-Type': 'application/json',
+      // 認証トークンをAuthorizationヘッダーに含める（Misskey APIの仕様による）
       'Authorization': `Bearer ${token}`,
     },
+    // リクエストボディに認証トークン 'i' を含める（Misskey APIのもう一つの認証方法）
     body: JSON.stringify({ ...body, i: token }),
   });
 
+  // レスポンスが成功しなかった場合（HTTPステータスコードが2xx以外）のエラーハンドリング
   if (!response.ok) {
-    const errorBody = await response.json().catch(() => ({}));
-    const errorMessage = errorBody.error?.message || response.statusText;
+    const errorBody = await response.json().catch(() => ({})); // エラーレスポンスボディをパース
+    const errorMessage = errorBody.error?.message || response.statusText; // エラーメッセージを抽出
     const error = new Error(`Misskey APIエラー (${endpoint}): ${errorMessage}`);
-    (error as any).statusCode = response.status;
-    (error as any).retryAfter = response.headers.get('Retry-After');
+    (error as any).statusCode = response.status; // HTTPステータスコードをエラーオブジェクトに追加
+    (error as any).retryAfter = response.headers.get('Retry-After'); // Retry-Afterヘッダーがあれば追加
     throw error;
   }
-  return response.json();
+  return response.json(); // 成功した場合、JSONデータを返却
 }
 
 /**
  * 指定されたアンテナIDのノート一覧を取得します。
+ * `antennas/notes` エンドポイントを使用します。
  * @param host Misskeyインスタンスのホスト名
  * @param token 認証用APIトークン
  * @param antennaId 取得対象のアンテナID
@@ -77,11 +87,15 @@ async function misskeyFetch(host: string, token: string, endpoint: string, body:
  */
 export async function fetchAntennaNotes(host: string, token: string, antennaId: string, limit: number = 30) {
   const notes = await misskeyFetch(host, token, 'antennas/notes', { antennaId, limit });
+  // 取得したノートの配列をZodスキーマでバリデーションします。
   return z.array(MisskeyNoteSchema).parse(notes);
 }
 
 /**
  * 指定されたノートIDの会話スレッドを取得します。
+ * `notes/conversation` エンドポイントを使用します。
+ * 現在の実装では、ルートノートとそれ以外を子孫として扱っていますが、
+ * Misskey APIのレスポンス構造に合わせて祖先ノートも適切に処理する必要があります。
  * @param host Misskeyインスタンスのホスト名
  * @param token 認証用APIトークン
  * @param noteId 会話の中心となるノートID
@@ -93,13 +107,15 @@ export async function fetchConversation(host: string, token: string, noteId: str
   const rootNote = conversation.find((note: any) => note.id === noteId);
   return {
     root: rootNote,
-    ancestors: [], // 本来はここにも適切なノートが入る
+    ancestors: [], // 本来はここにも適切なノートが入る（現在のAPIレスポンスでは直接提供されないため空）
     descendants: conversation.filter((note: any) => note.id !== noteId), // root以外を子孫として仮置き
   };
 }
 
 /**
  * 指定されたノートIDを中心に、その前後のタイムラインを取得します。
+ * `notes/local-timeline` または `notes/timeline` エンドポイントを使用します。
+ * `p-map` を使用して、前後のノート取得を並列で実行し、パフォーマンスを向上させています。
  * @param host Misskeyインスタンスのホスト名
  * @param token 認証用APIトークン
  * @param noteId 基点となるノートID
@@ -107,24 +123,27 @@ export async function fetchConversation(host: string, token: string, noteId: str
  * @returns 基点ノートと、その前後のノートを含む配列 (createdAt降順)
  */
 export async function getTimelineAround(host: string, token: string, noteId: string, scope: 'global' | 'local') {
+  // スコープに応じて適切なタイムラインエンドポイントを選択
   const timelineEndpoint = scope === 'local' ? 'notes/local-timeline' : 'notes/timeline';
 
-  // 1. 基点となるノートを取得
+  // 1. 基点となるノートを取得 (`notes/show`)
   const centerNote = await misskeyFetch(host, token, 'notes/show', { noteId });
   const parsedCenterNote = MisskeyNoteSchema.parse(centerNote);
 
-  // 2. 古いノート (基点ノートより前) を取得
+  // 2. 古いノート (基点ノートより前) を取得 (`untilId` を使用)
   const olderNotesPromise = misskeyFetch(host, token, timelineEndpoint, {
     untilId: noteId,
-    limit: 10,
+    limit: 10, // 前10件を取得
   }).then(notes => z.array(MisskeyNoteSchema).parse(notes));
 
-  // 3. 新しいノート (基点ノートより後) を取得
+  // 3. 新しいノート (基点ノートより後) を取得 (`sinceId` を使用)
   const newerNotesPromise = misskeyFetch(host, token, timelineEndpoint, {
     sinceId: noteId,
-    limit: 10,
+    limit: 10, // 後10件を取得
   }).then(notes => z.array(MisskeyNoteSchema).parse(notes));
 
+  // `p-map` を使用して、古いノートと新しいノートの取得を並列で実行します。
+  // `concurrency: 2` は同時に2つのPromiseを実行することを意味します。
   const [olderNotes, newerNotes] = await pMap([olderNotesPromise, newerNotesPromise], async (p) => await p, { concurrency: 2 });
 
   // 4. 全てのノートをマージし、重複を排除してcreatedAtの降順でソート
@@ -134,8 +153,11 @@ export async function getTimelineAround(host: string, token: string, noteId: str
     ...newerNotes,
   ];
 
+  // 重複するノートを排除するためにMapを使用します。
+  // MapのキーにノートIDを使用することで、ユニークなノートのみを保持できます。
   const uniqueNotes = Array.from(new Map(allNotes.map(note => [note.id, note])).values());
 
+  // ノートを投稿日時 (createdAt) の降順でソートします。
   uniqueNotes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return uniqueNotes;
