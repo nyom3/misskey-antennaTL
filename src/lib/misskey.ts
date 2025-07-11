@@ -94,22 +94,55 @@ export async function fetchAntennaNotes(host: string, token: string, antennaId: 
 /**
  * 指定されたノートIDの会話スレッドを取得します。
  * `notes/conversation` エンドポイントを使用します。
- * 現在の実装では、ルートノートとそれ以外を子孫として扱っていますが、
- * Misskey APIのレスポンス構造に合わせて祖先ノートも適切に処理する必要があります。
+ * Misskey APIは会話を時系列順に返すため、ルートノートを基準に祖先と子孫を正確に分類します。
  * @param host Misskeyインスタンスのホスト名
  * @param token 認証用APIトークン
  * @param noteId 会話の中心となるノートID
  * @returns 構造化されたスレッドオブジェクト
  */
 export async function fetchConversation(host: string, token: string, noteId: string) {
-  const conversation = await misskeyFetch(host, token, 'notes/conversation', { noteId });
+  // 会話ノートとルートノートを並列で取得
+  const [conversationRaw, rootNoteRaw] = await Promise.all([
+    misskeyFetch(host, token, 'notes/conversation', { noteId }),
+    misskeyFetch(host, token, 'notes/show', { noteId }),
+  ]);
 
-  const rootNote = conversation.find((note: any) => note.id === noteId);
+  // Zodでバリデーション
+  const conversation = z.array(MisskeyNoteSchema).parse(conversationRaw);
+  const rootNote = MisskeyNoteSchema.parse(rootNoteRaw);
+
+  // ルートノートを除外した会話ノートを準備
+  const filteredConversation = conversation.filter(note => note.id !== rootNote.id);
+
+  // ルートノートの作成日時を基準に祖先と子孫を分類
+  const ancestors = filteredConversation.filter(note => new Date(note.createdAt).getTime() < new Date(rootNote.createdAt).getTime());
+  const descendants = filteredConversation.filter(note => new Date(note.createdAt).getTime() > new Date(rootNote.createdAt).getTime());
+
+  // 祖先ノートは古い順、子孫ノートは新しい順にソート（APIから時系列順で返るとは限らないため）
+  ancestors.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  descendants.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
   return {
     root: rootNote,
-    ancestors: [], // 本来はここにも適切なノートが入る（現在のAPIレスポンスでは直接提供されないため空）
-    descendants: conversation.filter((note: any) => note.id !== noteId), // root以外を子孫として仮置き
+    ancestors: ancestors,
+    descendants: descendants,
   };
+}
+
+/**
+ * 複数のノート配列をマージし、重複を排除して投稿日時 (createdAt) の降順でソートします。
+ * @param notes 結合するノートの配列
+ * @returns 重複排除され、ソートされたノートの配列
+ */
+function mergeAndSortNotes(notes: MisskeyNote[]): MisskeyNote[] {
+  // 重複するノートを排除するためにMapを使用します。
+  // MapのキーにノートIDを使用することで、ユニークなノートのみを保持できます。
+  const uniqueNotes = Array.from(new Map(notes.map(note => [note.id, note])).values());
+
+  // ノートを投稿日時 (createdAt) の降順でソートします。
+  uniqueNotes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  return uniqueNotes;
 }
 
 /**
@@ -153,12 +186,5 @@ export async function getTimelineAround(host: string, token: string, noteId: str
     ...newerNotes,
   ];
 
-  // 重複するノートを排除するためにMapを使用します。
-  // MapのキーにノートIDを使用することで、ユニークなノートのみを保持できます。
-  const uniqueNotes = Array.from(new Map(allNotes.map(note => [note.id, note])).values());
-
-  // ノートを投稿日時 (createdAt) の降順でソートします。
-  uniqueNotes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  return uniqueNotes;
+  return mergeAndSortNotes(allNotes);
 }
