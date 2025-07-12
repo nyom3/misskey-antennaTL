@@ -14,7 +14,7 @@
 
 ## 2. システム全体像（図・構成要素）
 
-```mermaid
+mermaid
 flowchart TD
     A[ブラウザ (React/SWR)] -->|GET /api/mentionContext| B[Edge API (route.ts)]
     B -->|POST /api/antennas/notes など| C[Misskey API]
