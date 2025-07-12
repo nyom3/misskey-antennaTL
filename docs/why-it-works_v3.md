@@ -15,8 +15,11 @@
 ## 2. システム全体像（図・構成要素）
 
 ```mermaid
-flowchart TD
-    A[ブラウザ (React/SWR)] -->|GET /api/mentionContext| B[Edge API (route.ts)] B -->|POST /api/antennas/notes など| C[Misskey API]B -->|Zod型検証 & JSON| AB -.->|CDNキャッシュ (60s)| A
+graph TD
+  A["ブラウザ (React/SWR)"] -->|GET /api/mentionContext| B["Edge API (route.ts)"]
+  B -->|POST /api/antennas/notes など| C["Misskey API"]
+  B -->|Zod型検証 & JSON| A
+  B -.->|"CDNキャッシュ (60s)"| A
 ```
 
 - **フロント:** React (Next.js) + Tailwind CSS（UI/状態管理/SWR）
