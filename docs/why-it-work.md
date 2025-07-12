@@ -1,81 +1,205 @@
-# なぜ動くのか？ (Why it Works)
 
-このドキュメントは、`misskey-antennatl` アプリケーションがどのようにして技術的に機能しているかを解説します。
+# なぜ動くのか？ (Why-it-Works) — misskey-antennaTL
 
-## 1. 全体アーキテクチャ
+## 1. 俯瞰図：3 層＋CDN キャッシュ
 
-このアプリケーションは、**Next.js (App Router)** をフレームワークとして採用したシングルページアプリケーション (SPA) です。
-主要な構成要素は以下の通りです。
+```
+┌──────────────────────────── ブラウザ (React/SWR) ───────────────────────────┐
+│ 1. useSWR ➜ GET /api/mentionContext                                         │
+│ 2. useSWR ➜ (optional) GET /api/contextTL?noteId=…                          │
+└──────────────────────▲─────────────────────────────────────────────────────┘
+                       │  JSON (threads[]) / (timeline[])
+                       │ 60s キャッシュ (s‑maxage)
+┌──────────────────────┴─────────────────────────────────────────────────────┐
+│          Vercel Edge API Route (route.ts 2 本)                              │
+│  a) validate with Zod ➜ misskeyFetch()                                      │
+│  b) add `Cache‑Control: s‑maxage=60`                                        │
+└──────────────────────┬─────────────────────────────────────────────────────┘
+                       │  POST /api/antennas/notes など (Bearer + body.i)
+┌──────────────────────┴─────────────────────────────────────────────────────┐
+│                Misskey インスタンス API                                    │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
-- **フロントエンド**: React (Next.js) + Tailwind CSS
-  - ユーザーインターフェースの描画と状態管理を担当します。
-  - `useSWR` を用いて、バックエンドAPIから非同期にデータを取得し、30秒ごとに自動更新します。
+### 🎯 要点（30 秒サマリ）
 
-- **バックエンド (API Route)**: Next.js Edge Runtime
-  - `/api/mentionContext` という単一のエンドポイントを提供します。
-  - VercelのEdge Runtime上で動作し、Misskey APIへのリクエストを中継・加工することで、クライアントへのレスポンスを高速化します。
+* **ブラウザ**: useSWR が 30 秒おきにエンドポイントを再検証。必要に応じて文脈 TL も取得。
+* **Edge API**: Misskey に代理接続し、Zod で型検証。CDN に 60 秒キャッシュさせる。
+* **Misskey**: `antennas/notes`, `notes/conversation`, `notes/timeline` の 3 系列を返す。
+* **CDN**: 「30 秒ポーリング × 60 秒キャッシュ」で実質 2 ホップに 1 回しか Misskey を叩かない。
 
-- **外部API**: Misskey API
-  - アンテナのノート取得や、会話スレッドの取得など、すべてのデータソースはこのAPIに依存します。
+> 類推 ▶︎ **物流センター**に似ている。ブラウザは 30 秒ごとに在庫確認（useSWR）。Edge は倉庫で在庫を一括検品（Zod）。Misskey はメーカー倉庫。CDN は近所の小売店に置かれた「デポ」。
 
-## 2. データフロー
+---
 
-ユーザーがページにアクセスしてからタイムラインが表示されるまでのデータの流れは以下の通りです。
+## 2. データフロー：コード位置付き詳細
 
-1.  **クライアント → Next.js API Route**
-    - ブラウザ（クライアント）の `HomePage` コンポーネントがマウントされると、`useSWR` フックが `/api/mentionContext` に対してGETリクエストを送信します。
+| ステップ | 処理                                 | 主なコード                                         | 補足                                                             |
+| ---- | ---------------------------------- | --------------------------------------------- | -------------------------------------------------------------- |
+| ①    | *ブラウザ* ➜ `/api/mentionContext` GET | `src/app/page.tsx` (useSWR)                   | `refreshInterval: 30_000`、失敗で `toast.error()`                  |
+| ②    | Edge route.ts でアンテナ一覧取得            | `fetchAntennaNotes()` in `lib/misskey.ts`     | `antennas/notes` POST。`ThreadSchema` にまだ乗せない raw 配列            |
+| ③    | 各ノートの会話を並列取得                       | `p-map` + `fetchConversation()`               | 同時 5 件 (`concurrency:5`) で `notes/conversation` & `notes/show` |
+| ④    | Thread 構造を組み立て & 検証                | `ThreadSchema.array().parse(threads)`         | ここで **ZodError → 500** フローへ分岐可                                 |
+| ⑤    | Edge が CDN ヘッダ付与し JSON 返却          | `NextResponse.json()`                         | `s‑maxage=60, stale‑while‑revalidate`                          |
+| ⑥    | ブラウザ useSWR がキャッシュ更新               | `data: antennaData`                           | `isLoadingAntenna` false → UI再描画                               |
+| ⑦    | クリックで `selectedNoteId` セット         | `setSelectedNoteId(id)`                       | トリガで 2 つ目の SWR (contextTL) キー生成                                |
+| ⑧    | Edge `/api/contextTL` route.ts     | `getTimelineAround()`                         | sinceId/untilId で前後 10 件ずつ                                     |
+| ⑨    | 絵文字キャッシュ確立後描画                      | `parseNoteText()` + `dangerouslySetInnerHTML` | `isEmojiCacheReady` が true になるまでローディング継続                       |
 
-2.  **Next.js API Route → Misskey API**
-    - `/api/mentionContext` (Edge Runtime) はリクエストを受け取ると、サーバーサイドに保存された環境変数 (`.env.local`) を使用してMisskey APIにアクセスします。
-    - まず、`antennas/notes` エンドポイントを叩き、メンションが含まれるノートの一覧を取得します。
-    - 次に、取得した各ノートIDを元に `notes/conversation` エンドポイントを並列で叩き（`p-map`で同時実行数を制限）、それぞれの会話スreadを取得します。
+### ストーリーで読む
 
-3.  **Next.js API Route → クライアント**
-    - APIルートは、Misskeyから取得したデータを `Thread` という一貫したデータ構造に整形・検証（Zodを使用）した後、JSON形式でクライアントに返却します。
-    - この際、`Cache-Control` ヘッダーを付与し、VercelのCDNに60秒間キャッシュさせることで、API負荷を軽減します。
+1. **一覧**を見て → 2. **ノートをクリック** → 3. 前後タイムラインと会話を即時取得 → 4. 絵文字が揃った時点で初めて本文をレンダリング。UX 的には「一瞬で全文脈が出る」ように感じる。
 
-4.  **UIの更新**
-    - クライアントはSWR経由でJSONデータを受け取ると、Reactコンポーネント (`Thread`, `NoteCard`) を使ってUIを再描画し、ユーザーにタイムラインを表示します。
+---
 
-## 3. 主要な技術選択
+## 3. 技術選択と解決した課題
 
-- **Next.js App Router**: モダンなReactの機能（Server Components等）を活用しつつ、ファイルベースのルーティングで直感的な開発を可能にするために採用しました。
-- **Edge Runtime**: APIリクエストの地理的な遅延を最小化し、高速な応答を実現するために選択しました。Node.jsのすべての機能は使えませんが、`fetch`を中心とした処理には最適です。
-- **SWR**: データ取得におけるキャッシュ管理、自動再検証、ローディング・エラー状態のハンドリングを宣言的に記述できるため、UI開発の複雑さを大幅に削減します。
-- **Zod**: 外部API（Misskey API）からのレスポンスをランタイムで検証し、アプリケーション全体で型安全性を保証するために不可欠です。
-- **Tailwind CSS**: ユーティリティファーストのアプローチにより、CSSを直接書くことなく、迅速かつ一貫性のあるUIデザインを構築できます。
+| 技術                     | 何を解決？                                                 | 類推イメージ                                   |
+| ---------------------- | ----------------------------------------------------- | ---------------------------------------- |
+| **Next.js App Router** | ページ階層 × データフェッチを UI ツリーに共置。SSR/CSR の境界を柔軟に。           | スケルトン住宅：間取り（layout）と部屋（page）をファイル名で決めるだけ |
+| **Edge Runtime**       | 地理的遅延カット & サーバレスオートスケール。Node API 制限の代わりに `fetch` 最適化。 | 駅ナカのコンビニ：近いので速い、品目は最小限                   |
+| **SWR**                | キャッシュ＋再検証＋エラーUI を 1 行で。                               | ネットワークの定期巡回センサー                          |
+| **Zod**                | 外部 API 崩壊の即検知。型の Single Source。                       | 空港ゲートの荷物 X 線検査                           |
+| **LRUCache**           | カスタム絵文字 1000 件弱をメモリ上で効率保存。                            | 冷蔵庫の回転棚：賞味期限が近い順に前へ                      |
+| **Tailwind**           | クラス 1 行で一貫 UI。                                        | LEGO ブロック感覚                              |
 
-## 4. 絵文字処理の仕組み
+---
 
-このアプリケーションでは、Misskeyのカスタム絵文字をノート本文中に表示するために、独自の絵文字処理ロジックを実装しています。
+## 4. 型安全の壁：Zod 深掘り
 
-### 4.1. 絵文字データの取得とキャッシュ (`src/lib/emoji.ts`)
+```ts
+const MisskeyNoteSchema = z.object({
+  id: z.string(),
+  createdAt: z.string(),
+  text: z.string().nullable(),
+  user: z.object({
+    id: z.string(),
+    username: z.string(),
+    avatarUrl: z.string().url(),
+  }),
+});
+```
 
-- **`fetchAndCacheEmojis` 関数**:
-    - アプリケーション起動時（`src/app/page.tsx` の `useEffect` フック内）に一度だけ呼び出されます。
-    - Misskeyインスタンスの `/api/emojis` エンドポイントに対して **POST** メソッドでリクエストを送信し、利用可能なすべてのカスタム絵文字のリストを取得します。
-    - 取得した絵文字データ（絵文字名とURL）は、`LRUCache` インスタンスである `emojiCache` に保存されます。
-    - **LRUCache**: キャッシュの最大サイズ (`max`) を指定できるキャッシュ機構です。今回のトラブルシューティングでは、初期設定の `max: 500` では取得する絵文字数（約977個）に対して不足しており、古い絵文字がキャッシュから削除されてしまう問題が発生しました。これを `max: 2000` に増やすことで解決しました。
+* **静的**: `type MisskeyNote = z.infer<typeof MisskeyNoteSchema>` → VSCode 補完
+* **実行時**: `.parse(raw)` → 失敗なら `ZodError`。Edge で 500 JSON に変換。
 
-### 4.2. ノート本文中の絵文字置換 (`src/lib/emoji.ts`)
+> 類推 ▶︎ 「履歴書チェック」：項目が欠けていたら採用面接まで進めない。
 
-- **`parseNoteText` 関数**:
-    - ノートのテキストとMisskeyインスタンスのホスト名を受け取ります。
-    - 正規表現 `/:( [a-zA-Z0-9_\-]+):/g` を使用して、テキスト内の `:emoji_name:` 形式のショートコードをすべて検索します。
-    - 検索された絵文字名が `emojiCache` に存在する場合、その絵文字のURLを使用して `<img>` タグを生成し、元のショートコードと置換します。
-    - `class="inline-block h-5 w-5"` を付与することで、Tailwind CSSによって絵文字画像がインラインで表示され、適切なサイズに調整されます。
+---
 
-## 5. レンダリングとハイドレーション
+## 5. キャッシュ戦略
 
-Next.jsのApp Routerでは、デフォルトでReact Server Components (RSC) が使用され、サーバーサイドでコンポーネントがレンダリングされます。しかし、クライアントサイドでのインタラクティブな動作が必要な場合は、`"use client"` ディレクティブを使用します。
+### 5‑1 CDN + Edge
 
-- **`"use client"` ディレクティブ**:
-    - `src/app/page.tsx` や `src/components/NoteCard.tsx` の冒頭に記述されており、これらのコンポーネントがクライアントサイドでレンダリングされることを示します。これにより、`useState` や `useEffect` といったReact Hooksや、ブラウザAPI（`fetch`など）を使用できるようになります。
+* **HTTP ヘッダ** `Cache‑Control: s‑maxage=60, stale‑while‑revalidate`
+* ユーザ数 N 人が 30 秒ごとに切り替えても、Misskey への直撃は 60 秒に 1 回。
 
-- **ハイドレーションエラーとその解決**:
-    - **問題**: サーバーサイドでレンダリングされたHTMLと、クライアントサイドでJavaScriptが実行された後に生成されるHTMLが一致しない場合に発生するエラーです。今回のケースでは、サーバーサイドでは絵文字キャッシュがまだ存在しないため、絵文字ショートコードがそのままHTMLに出力されます。しかし、クライアントサイドでは非同期で絵文字キャッシュが読み込まれた後に絵文字画像に置換されるため、初期レンダリング時に不一致が生じていました。
-    - **解決策**: `src/app/page.tsx` に `isEmojiCacheReady` という状態を導入しました。`fetchAndCacheEmojis` が完了し、絵文字キャッシュが準備できるまで、ノートの描画を遅延させることで、サーバーとクライアントのHTMLの不一致を防ぎ、ハイドレーションエラーを解消しました。
+### 5‑2 LRUCache for emoji
 
-- **`dangerouslySetInnerHTML` の使用**:
-    - `src/components/NoteCard.tsx` では、`parseNoteText` 関数によって生成されたHTML文字列を直接DOMに挿入するために `dangerouslySetInnerHTML` を使用しています。
-    - **注意点**: このプロパティは、XSS（クロスサイトスクリプティング）攻撃のリスクがあるため、信頼できるソースからのHTML文字列にのみ使用すべきです。本アプリケーションでは、Misskey APIから取得したノート本文を処理しており、絵文字置換以外のユーザー入力によるHTML挿入は行わないため、安全に使用しています。
+* `max: 2000` → Misskey.io の絵文字 (\~977) 全保持 OK。
+* `.get(name)` の O(1) 参照。古いものは自動でパージ。
+
+---
+
+## 6. 絵文字処理フロー  *(v2 もともとの章)
+
+```
+fetchAndCacheEmojis()      // one‑shot POST /api/emojis
+       ▼                  // LRUCache に保存
+isEmojiCacheReady === false
+       ▼ useEffect で true に
+parseNoteText() replace :emoji: → <img>
+       ▼
+dangerouslySetInnerHTML()  // 安全な HTML のみ
+```
+
+* 安全性確保：Misskey から来る text に `<script>` は入らない。置換時も画像タグのみ挿入。
+* ハイドレーション対応：キャッシュ未完了時はテキストのまま SSR → クライアントで true になってから再レンダリング。
+
+### 6-A. 絵文字データの取得とキャッシュ  *(v1 4.1 全文を移植)*
+- **`fetchAndCacheEmojis`**（`src/lib/emoji.ts`）  
+  1. `POST /api/emojis` でカスタム絵文字リストを一括取得  
+  2. 受け取った `{ name, url }` を **LRUCache** (`max: 2000`) に保存  
+  3. 初回ロード時にのみ実行 (`useEffect` in `src/app/page.tsx`)  
+- **トラブルシュート**: 977 個の絵文字を `max: 500` で運用すると LRU から溢れ、  
+  一部が表示されない ⇒ `max: 2000` へ拡大して解決。
+
+### 6-B. ノート本文中での絵文字置換  *(v1 4.2 全文を移植)*
+- **`parseNoteText`**  
+  1. 正規表現 `/:( [a-zA-Z0-9_\\-]+):/g` でショートコード検出  
+  2. LRU に存在すれば `<img class="inline-block h-5 w-5" ...>` へ置換  
+  3. 置換後の HTML 文字列を返す  
+- `NoteCard.tsx` 側では  
+```tsx
+  <div
+    className="prose"
+    dangerouslySetInnerHTML={{ __html: parseNoteText(note.text) }}
+  />
+```
+
+によって描画される。
+
+---
+
+## 7. エラー伝搬ケーススタディ  *(v2 章)*
+
+```
+Misskey returns avatarUrl: null
+        ▼
+ThreadSchema.parse() → ZodError("avatarUrl: Invalid url")
+        ▼
+Edge catch → HTTP 500 JSON { error, details }
+        ▼
+fetcher(): res.ok false → throw Error(details)
+        ▼
+useSWR error → toast.error("読込に失敗: avatarUrl invalid")
+```
+
+ユーザーは「読込に失敗」と正確な理由を即座に知るが、UI はクラッシュしない。
+
+### 7-A. レンダリングとハイドレーション  *(v1 5. 全文を移植)*
+
+* **問題**: SSR 時は絵文字キャッシュが空 → `:penguin:` がそのまま HTML に。
+  CSR でキャッシュ完了後に `<img>` 差し替えが起きるため初期 DOM に不一致が生じる。
+* **対策** (`src/app/page.tsx`)
+
+  ```tsx
+  const [isEmojiCacheReady, setIsEmojiCacheReady] = useState(false);
+  const isLoading = isLoadingAntenna
+                 || (selectedNoteId && isLoadingTimeline)
+                 || (!!instanceHost && !isEmojiCacheReady);
+  ```
+
+  * 絵文字キャッシュが終わるまで `isLoading` を true にし、ページ描画を遅延
+  * ハイドレーション差分がゼロになり、警告も解消
+
+---
+
+## 8. App Router vs Pages Router 早見表
+
+| 観点     | Pages                | App                        | ひと言類推         |
+| ------ | -------------------- | -------------------------- | ------------- |
+| ルート判断  | `pages/` ファイル        | `app/` レイアウト階層             | 1階建て vs メゾネット |
+| データ取得  | `getServerSideProps` | Server Component で直接 await | キッチンが各部屋に増える  |
+| レンダリング | 100% CSR or SSR      | RSC + streaming            | 動画配信のチャンク送信   |
+| 移行可否   | デフォルト                | 両立 OK (競合時 app優先)          | 既存ビルに新館増築     |
+
+---
+
+## 9. 開発フロー (簡易メモ)
+
+1. `.env.local` に `MISSKEY_HOST` `MISSKEY_TOKEN` `ANTENNA_ID` を入れる。
+2. `npm run dev` → `http://localhost:3000`。
+3. `curl http://localhost:3000/api/mentionContext | jq` で JSON 確認。
+4. VSCode で `CMD + P` → `ThreadSchema` と打てば型定義にジャンプ。
+
+---
+
+## 10. まとめ：結局「なぜ動く？」
+
+> **多層の安全装置が噛み合っているから**
+
+* Edge が Misskey との境界役、Zod がデータ検査官、SWR がデータ搬送管理人、LRU が倉庫、Tailwind が内装標準化。
+* すべてが **壊れる前提** で設計されており、壊れても UI は壊さない。だからユーザーは「まるで社内ツールのように安定した Misskey ビューア」を享受できる。
+
+```
